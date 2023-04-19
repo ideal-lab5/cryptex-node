@@ -5,7 +5,7 @@ use codec::{Encode, Decode};
 use sp_std::vec::Vec;
 use scale_info::TypeInfo;
 use frame_support::{BoundedVec, pallet_prelude::*};
-use dkg::dkg::dkg::*;
+use dkg_core::*;
 
 #[cfg(test)]
 mod mock;
@@ -27,10 +27,12 @@ pub struct Society<AccountId> {
 }
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone)]
-pub struct SerializedPublicKey {
-	pub g1: Vec<u8>,
-	pub g2: Vec<u8>,
+pub enum Phase {
+	Join,
+	Submit,
+	Dispute,
 }
+
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -47,12 +49,13 @@ pub mod pallet {
 		G1Projective as G1, G2Affine, 
 		G2Projective as G2
 	};
-	use ark_serialize::CanonicalSerialize;
+	use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 	use ark_ec::Group;
 	use ark_std::{
         ops::Mul,
         rand::Rng,
     };
+	use dkg_core::*;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -66,7 +69,7 @@ pub mod pallet {
 	}
 
 	#[pallet::storage]
-	pub type Membership<T: Config> = StorageMap<
+	pub type Societies<T: Config> = StorageMap<
 		_, 
 		Blake2_128,
 		SocietyId,
@@ -74,25 +77,39 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
+	/// commitments to participate in the society
 	#[pallet::storage]
-	pub type SocietyDetails<T: Config> = StorageMap<
+	pub type RSVP<T: Config> = StorageMap<
 		_, 
 		Blake2_128,
 		SocietyId,
 		// map the member's acct id to their public key
-		Vec<(T::AccountId, SerializedPublicKey)>,
+		Vec<(T::AccountId, Vec<u8>)>,
+		ValueQuery,
+	>;
+
+	/// map block number to societies who have join deadlines on that block
+	#[pallet::storage]
+	pub type Deadlines<T: Config> = StorageMap<
+		_,
+		Blake2_128,
+		T::BlockNumber,
+		Vec<SocietyId>,
 		ValueQuery,
 	>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-
+		CreatedSociety,
+		JoinedSociety,
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		SocietyAlreadyExists,
+		InvalidPublicKey,
+		NotMember,
 	}
 
 	#[pallet::call]
@@ -105,83 +122,78 @@ pub mod pallet {
 			society_id: SocietyId,
 			threshold: u8,
 			name: Vec<u8>,
+			deadline: T::BlockNumber,
 			members: Vec<T::AccountId>,
 		) -> DispatchResult {
 			let founder = ensure_signed(origin)?;
 			ensure!(
-				Membership::<T>::get(society_id.clone()).is_none(),
+				Societies::<T>::get(society_id.clone()).is_none(),
 				Error::<T>::SocietyAlreadyExists
 			);
-			Membership::<T>::insert(society_id.clone(),
+			Societies::<T>::insert(society_id.clone(),
 				Society {
 					founder: founder,
 					members: members,
 					threshold: threshold,
 					name: name,
 				});
+			// setup deadlines for the society
+			Deadlines::<T>::mutate(deadline, |ids| ids.push((society_id.clone(), Phase::Join)));
+			Self::deposit_event(Event::<T>::CreatedSociety);
 			Ok(())
 		}
 
+		/// for now, we'll keep this SUPER SUPER SIMPLE
+		/// participants just directly submit their public key
+		/// no shares, no disputes
 		#[pallet::call_index(1)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
 		pub fn join_society(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
+			compressed_g2: Vec<u8>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin.clone())?;
-			// for now we'll go with a simplified model
-			// just generate a new polynomial, secret key, and pubkey
-			// TODO: use T::Randomness::get()
-			let rng = ChaCha20Rng::seed_from_u64(23u64);
-			let poly = keygen(2, rng);
-			let sk = calculate_secret(poly);
-			let g1 = G1::generator().mul(Fr::from(11u64));
-			let g2 = G2::generator().mul(Fr::from(17u64));
-			let pk = calculate_pubkey(g1, g2, sk);
-
-			// experiment 1: put the pubkey onchain as serialized + compressed
-			let mut bpk1 = Vec::with_capacity(1000);
-        	pk.g1.serialize_compressed(&mut bpk1).unwrap();
-
-			let mut bpk2 = Vec::with_capacity(1000);
-			pk.g2.serialize_compressed(&mut bpk2).unwrap();
-
-			let s_pk = SerializedPublicKey {
-				g1: bpk1,
-				g2: bpk2,
-			};
-
-			SocietyDetails::<T>::mutate(society_id, |details| {
-				details.push((who.clone(), s_pk));
+			// ensure member of society
+			ensure!(Societies::<T>::get(society_id.clone()).contains(who.clone()), Error::<T>::NotMember);
+			// ensure the deadline has not passed
+			// try to deserialize the pubkey, for verification of format
+			ark_bls12_381::G2Projective::deserialize_compressed(&compressed_g2[..])
+				.map_err(|e| {
+					return Error::<T>::InvalidPublicKey;
+				});
+			RSVP::<T>::mutate(society_id.clone(), |rsvps| {
+				rsvps.push((who.clone(), compressed_g2));
 			});
+			Self::deposit_event(Event::<T>::JoinedSociety);
 
 			Ok(())
 		}
-
-		// // request each member of a society to submit a share
-		// #[pallet::call_index(2)]
-		// #[pallet::weight(0)]
-		// pub fn request_meeting(
-		// 	origin: OriginFor<T>,
-		// 	society_id: SocietyId,
-		// ) -> DispatchResult {
-		// 	Ok(())
-		// }
-
-		// // each member of a society can submit a share
-		// #[pallet::call_index(3)]
-		// #[pallet::weight(0)]
-		// pub fn submit_share(
-		// 	// origin: OriginFor<T>,
-		// 	society_id: SocietyId,
-		// ) -> DispatchResult {
-		// 	Ok(())
-		// }
 	}
 }
 
-impl<T:Config> Pallet<T> {
-	// fn calculate_society_pubkey() -> Vec<u8> {
 
-	// }
-}
+			// // for now we'll go with a simplified model
+			// // just generate a new polynomial, secret key, and pubkey
+			// let rng = ChaCha20Rng::seed_from_u64(23u64);
+			// let poly = keygen(2, rng);
+			// let sk = calculate_secret(poly);
+			// let g1 = G1::generator().mul(Fr::from(11u64));
+			// let g2 = G2::generator().mul(Fr::from(17u64));
+			// let pk = calculate_pubkey(g1, g2, sk);
+
+			// // experiment 1: put the pubkey onchain as serialized + compressed
+			// let mut bpk1 = Vec::with_capacity(1000);
+        	// pk.g1.serialize_compressed(&mut bpk1).unwrap();
+
+			// let mut bpk2 = Vec::with_capacity(1000);
+			// pk.g2.serialize_compressed(&mut bpk2).unwrap();
+
+			// let s_pk = SerializedPublicKey {
+			// 	g1: bpk1,
+			// 	g2: bpk2,
+			// };
+
+			// SocietyDetails::<T>::mutate(society_id, |details| {
+			// 	details.push((who.clone(), s_pk));
+			// });

@@ -1735,8 +1735,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "dkg"
+name = "dkg-core"
 version = "1.0.0-dev"
+source = "git+https://github.com/ideal-lab5/dkg?branch=main#c2e9d7eff71370a1e87c9a324b69257cc3291a99"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -1745,9 +1746,11 @@ dependencies = [
  "ark-serialize",
  "ark-std",
  "num-bigint",
- "parity-scale-codec",
  "rand_chacha 0.3.1",
+ "serde",
+ "serde-wasm-bindgen",
  "sha2 0.10.6",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -4751,7 +4754,7 @@ dependencies = [
  "ark-ec",
  "ark-serialize",
  "ark-std",
- "dkg",
+ "dkg-core",
  "frame-benchmarking",
  "frame-support",
  "frame-system",
@@ -7106,6 +7109,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb2f3770c8bce3bcda7e149193a069a0f4365bda1fa5cd88e03bca26afc1216c"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3b4c031cd0d9014307d82b8abf653c0290fbdaeb4c02d00c63cf52f728628bf"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]

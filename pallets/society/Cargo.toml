@@ -21,18 +21,15 @@ scale-info = { version = "2.1.1", default-features = false, features = ["derive"
 frame-benchmarking = { version = "4.0.0-dev", default-features = false, optional = true, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
 frame-support = { version = "4.0.0-dev", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
 frame-system = { version = "4.0.0-dev", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
-# dkg = { git = "https://github.com/ideal-lab5/dkg", default-features = false, version = "1.0.0-dev", branch = "main" }
+dkg-core = { git = "https://github.com/ideal-lab5/dkg", default-features = false, version = "1.0.0-dev", branch = "main" }
 # for local development
-dkg = { path = "../../../../dkg/", default-features = false, version = "1.0.0-dev", features = [] }
+# dkg-core = { path = "../../../../dkg/dkg-core", default-features = false, version = "1.0.0-dev", features = [] }
 num-bigint = { version = "0.4.3", default-features = false }
 rand_chacha = { version = "0.3.1", default-features = false }
 ark-bls12-381 = { version = "0.4.0", features = ["curve"], default-features = false }
 ark-ec = { version = "0.4.0", default-features = false }
 ark-std = { version = "0.4.0", default-features = false }
 ark-serialize = { version = "0.4.0", default-features = false }
-# sp-core = { version = "7.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
-# sp-io = { version = "7.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
-# sp-runtime = { version = "7.0.0", git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.40" }
 sp-std = { version = "5.0.0", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v0.9.37" }
 
 [dev-dependencies]
@@ -43,18 +40,14 @@ sp-runtime = { version = "7.0.0", git = "https://github.com/paritytech/substrate
 [features]
 default = ["std"]
 std = [
-	# "serde",
 	"codec/std",
-	"dkg/std",
+	"dkg-core/std",
 	"num-bigint/std",
 	"rand_chacha/std",
 	"ark-bls12-381/std",
 	"ark-ec/std",
 	"ark-std/std",
 	"ark-serialize/std",
-	# "sp-std/std",
-	# 'sp-runtime/std',
-	# 'sp-io/std',
 	"sp-std/std",
 	"frame-benchmarking?/std",
 	"frame-support/std",
