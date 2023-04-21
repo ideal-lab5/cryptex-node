@@ -33,6 +33,11 @@ pub enum Phase {
 	Dispute,
 }
 
+#[derive(Encode, Decode, PartialEq, TypeInfo, Clone)]
+pub enum MemberStatus {
+	Invitee,
+	Active,
+}
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -45,8 +50,7 @@ pub mod pallet {
 	// TODO: do these need to be used here?
 	// need to update the interface in dkg lib 
 	use ark_bls12_381::{
-		Bls12_381, Fr,
-		G1Projective as G1, G2Affine, 
+		Fr, G1Projective as G1, 
 		G2Projective as G2
 	};
 	use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -88,13 +92,24 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	#[pallet::storage]
+	pub type Membership<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128,
+		T::AccountId,
+		Blake2_128,
+		MemberStatus,
+		Vec<SocietyId>,
+		ValueQuery,
+	>;
+
 	/// map block number to societies who have join deadlines on that block
 	#[pallet::storage]
 	pub type Deadlines<T: Config> = StorageMap<
 		_,
 		Blake2_128,
 		T::BlockNumber,
-		Vec<SocietyId>,
+		Vec<(SocietyId, Phase)>,
 		ValueQuery,
 	>;
 
@@ -130,10 +145,18 @@ pub mod pallet {
 				Societies::<T>::get(society_id.clone()).is_none(),
 				Error::<T>::SocietyAlreadyExists
 			);
+			// send invites to each member => implies more members=higher weight
+			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			for member in members.iter() {
+				Membership::<T>::mutate(
+					member.clone(), 
+						MemberStatus::Invitee, 
+							|v| v.push(society_id.clone()));
+			}
 			Societies::<T>::insert(society_id.clone(),
 				Society {
 					founder: founder,
-					members: members,
+					members: members.clone(),
 					threshold: threshold,
 					name: name,
 				});
@@ -155,8 +178,14 @@ pub mod pallet {
 		) -> DispatchResult {
 			let who = ensure_signed(origin.clone())?;
 			// ensure member of society
-			ensure!(Societies::<T>::get(society_id.clone()).contains(who.clone()), Error::<T>::NotMember);
-			// ensure the deadline has not passed
+			let maybe_society = Societies::<T>::get(society_id.clone());
+			ensure!(
+				maybe_society.is_some() 
+					&& maybe_society.unwrap().members.contains(&who.clone()), 
+				Error::<T>::NotMember
+			);
+			// TODO: ensure the deadline has not passed
+			// update membership map
 			// try to deserialize the pubkey, for verification of format
 			ark_bls12_381::G2Projective::deserialize_compressed(&compressed_g2[..])
 				.map_err(|e| {
@@ -165,10 +194,37 @@ pub mod pallet {
 			RSVP::<T>::mutate(society_id.clone(), |rsvps| {
 				rsvps.push((who.clone(), compressed_g2));
 			});
+			// update membership map
+			Membership::<T>::mutate(
+				who.clone(), 
+					MemberStatus::Invitee, 
+						|v| {
+							let index = v.iter().position(|x| *x == society_id.clone()).unwrap();
+							v.remove(index)
+						});
+			Membership::<T>::mutate(
+				who.clone(), 
+					MemberStatus::Active, 
+						|v| {
+							v.push(society_id.clone())
+						});
 			Self::deposit_event(Event::<T>::JoinedSociety);
 
 			Ok(())
 		}
+
+		// #[pallet::call_index(1)]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// pub fn submit_reencryption_key(
+		// 	origin: OriginFor<T>, 
+		// 	society_id: SocietyId,
+		// 	shares: Vec<u8>,
+		// 	commitments: Vec<u8>,
+		// ) -> DispatchResult {
+		// 	let who = ensure_signed(origin.clone());
+		// 	Ok(())
+		// }
+
 	}
 }
 
