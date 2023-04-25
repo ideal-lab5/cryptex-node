@@ -13,30 +13,20 @@ Society formation happens in several phase:
                                                                                       
                 +   <--d_0 -->    +     <--d_1-->      +            <--d_2-->
 +-------------------------------------------------------------------------------------+
-Phase::Create   +   Phase::Join   +   Phase::Submit    +    Phase::(Verify + ) Dispute    
+Phase::Create   +   Phase::Commit   +   Phase::Join    +    Phase::Verify/Dispute    
 ```
 
 First, a potential society is created. For the next `d_0` blocks, invited members have the opportunity to commit to joining by issuing a BLS12-381 public key onchain. Afer the deadline passes, for the next d_1 blocks, participants submit encrypted shares and commitments on chain. And finally, in the last d_2 blocks, nodes verify (offchain) and dispute any invalid shares they encountered.
 
+## on_initialize
+
+Each society is given two distinct deadlines. Firstly, when created, the founder specified a deadline after which participants can no longer issue commitments. After this, we arbitrarily give 10 more blocks to verify shares and submit public keys. This functionality is accomplihed using the on_initialize hook.
+
 ## Extrinsics
 
-### Permissionless
-- `create_society`(id, name, threshold, members, deadline): create a new onchain soceity, mapping an id to a 'society' struct, including founder, members, and threshold. Potential members have until the specified deadline  to join. Once the deadline is reached, if a threshold has not participated then the society should 'fail'. If at least a threshold has 'joined', then it starts the next phase where they submit shares and commitments. 
-- `join_society`(id, pubkey): join a society if you haven't done so by submitting a new public key (can be any BLS12-381 keypair)
-- `submit_shares`(pubkey -> (encrypted_share, commitment)): only callable during the submission period, submit encrypted shares and commitments on chain for each participant who joined.
-- `dispute_share`
-
-### Permissioned
-- ?
-
-- Encryption
-  - submit_decryption_share 
-- Threshold Signatures
-  - submit_signed_message (for threshold signatures)
-
-## Offchain
-- encrypt_message (callable by anybody, calculates the society's pubkey on the fly given input)
-  - probably done in browser/client using dkg lib bundled as wasm
+- `create(id, name, threshold, members, deadline)`: create a new onchain society, mapping an id to a 'society' struct, including founder, members, and threshold. Potential members have until the specified deadline  to join. Once the deadline is reached, if a threshold has not participated then the society should 'fail'. If at least a threshold has 'joined', then it starts the next phase where they submit shares and commitments. 
+- `commit(id, shares_and_commitments)`: submit shares and commitments for the specific society
+- `join(id, pubkey)`: submit a public key to the society, will be used in group pubkey derivation. If you submit a key, this assumes you are committing to the society. If you mark a share as invalid, then simply do not submit a public key.
 
 ## Usage
 
@@ -45,3 +35,10 @@ impl pallet_society::Config for Runtime {
   type RuntimeEvent = RuntimeEvent;
 }
 ```
+
+## Status
+
+- [ ] add deadlines to requests
+- [ ] bound storage
+- [ ] sign and verify
+- [ ] encrypt/decrypt shares

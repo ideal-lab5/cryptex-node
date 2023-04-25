@@ -1,4 +1,4 @@
-use crate as pallet_template;
+use crate as pallet_society;
 use frame_support::traits::{ConstU16, ConstU64};
 use sp_core::H256;
 use sp_runtime::{
@@ -17,7 +17,7 @@ frame_support::construct_runtime!(
 		UncheckedExtrinsic = UncheckedExtrinsic,
 	{
 		System: frame_system,
-		TemplateModule: pallet_template,
+		Society: pallet_society,
 	}
 );
 
