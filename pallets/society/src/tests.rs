@@ -4,7 +4,7 @@ use frame_support::{assert_noop, assert_ok};
 #[test]
 fn test_can_create_society() {
 	new_test_ext().execute_with(|| {
-		let id: crate::SocietyId = b"test".to_vec();
+		let id: crate::SocietyId = *slice_to_array_8(b"testtest").unwrap();
 		let name: Vec<u8> = b"test".to_vec();
 		let threshold = 2;
 		let mut members = Vec::new();
@@ -67,7 +67,7 @@ fn test_can_create_society() {
 #[test]
 fn test_can_submit_commitments_when_invitee_and_commit_phase() {
 	new_test_ext().execute_with(|| {
-		let id: crate::SocietyId = b"test".to_vec();
+		let id: crate::SocietyId = *slice_to_array_8(b"testtest").unwrap();
 		let name: Vec<u8> = b"test".to_vec();
 		let threshold = 2;
 		let mut members = Vec::new();
@@ -114,7 +114,7 @@ fn test_can_submit_commitments_when_invitee_and_commit_phase() {
 #[test]
 fn test_try_set_join_works_with_threshold_of_commitments() {
 	new_test_ext().execute_with(|| {
-		let id: crate::SocietyId = b"test".to_vec();
+		let id: crate::SocietyId = *slice_to_array_8(b"testtest").unwrap();
 		let name: Vec<u8> = b"test".to_vec();
 		let threshold = 2;
 		let mut members = Vec::new();
@@ -161,7 +161,7 @@ fn test_try_set_join_works_with_threshold_of_commitments() {
 #[test]
 fn test_try_set_join_fails_with_sub_threshold_participants() {
 	new_test_ext().execute_with(|| {
-		let id: crate::SocietyId = b"test".to_vec();
+		let id: crate::SocietyId = *slice_to_array_8(b"testtest").unwrap();
 		let name: Vec<u8> = b"test".to_vec();
 		let threshold = 2;
 		let mut members = Vec::new();
@@ -201,4 +201,14 @@ fn test_try_set_join_fails_with_sub_threshold_participants() {
 			Error::<Test>::ThresholdNotReached,
 		);
 	});
+}
+
+
+pub fn slice_to_array_8(slice: &[u8]) -> Option<&[u8; 8]> {
+	if slice.len() == 8 {
+		let ptr = slice.as_ptr() as *const [u8; 8];
+		unsafe {Some(&*ptr)}
+	} else {
+		None
+	}
 }

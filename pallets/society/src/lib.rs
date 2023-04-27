@@ -16,7 +16,7 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
-type SocietyId = Vec<u8>;
+pub type SocietyId = Vec<u8>;
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone, Debug)]
 pub struct Society<AccountId> {
@@ -41,9 +41,13 @@ pub struct Share {
 }
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone)] 
-pub struct TransactionRequest<AccountId, Balance> {
-	pub recipient: AccountId,
-	pub amount: Balance,
+pub struct EncryptedSecret<AccountId> {
+	// read only, optional
+	pub author: Option<AccountId>,
+	// the ephemeral key used to create the ciphertext
+	pub u: Vec<u8>,
+	// the verification key
+	pub v: Vec<u8>,
 }
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone, Debug)]
@@ -73,14 +77,14 @@ pub mod pallet {
 		Fr, G1Projective as G1, 
 		G2Projective as G2
 	};
-	use ark_crypto_primitives::signature::schnorr::Signature;
+	// use ark_crypto_primitives::signature::schnorr::Signature;
 	use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 	use ark_ec::Group;
 	use ark_std::{
         ops::Mul,
         rand::Rng,
     };
-	use dkg_core::*;
+	// use dkg_core::*;
 	use frame_support::weights::Weight;
 
 	#[pallet::pallet]
@@ -114,12 +118,13 @@ pub mod pallet {
 
 	/// commitments to participate in the society
 	#[pallet::storage]
-	pub type RSVP<T: Config> = StorageMap<
+	pub type Pubkeys<T: Config> = StorageMap<
 		_, 
 		Blake2_128,
 		SocietyId,
-		// map the member's acct id to their public key
-		Vec<(T::AccountId, Vec<u8>)>,
+		// map the member's acct id to their public key in G1 and G2
+		// TODO: make a struct for this
+		Vec<(T::AccountId, Vec<u8>, Vec<u8>)>,
 		ValueQuery,
 	>;
 
@@ -145,15 +150,6 @@ pub mod pallet {
 	>;
 
 	#[pallet::storage]
-	pub type Signatures<T: Config> = StorageMap<
-		_,
-		Blake2_128,
-		SocietyId,
-		Vec<(T::AccountId, (Vec<u8>, Vec<u8>))>, // TODO: expose serializable wrapper from dkg lib
-		ValueQuery,
-	>;
-
-	#[pallet::storage]
 	pub type Deadlines<T: Config> = StorageMap<
 		_,
 		Blake2_128,
@@ -162,40 +158,74 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	/// ultimately I think this would 
+	/// be better suited to exist in a contract
+	/// but for the sake of simplicity and speed I am doing it here
 	#[pallet::storage]
-	pub type WalletTransactionQueue<T: Config> = StorageMap<
+	pub type Fs<T: Config> = StorageDoubleMap<
 		_,
 		Blake2_128,
-		T::BlockNumber,
-		Vec<Tra>,
+		SocietyId,
+		Blake2_128,
+		[u8; 32],
+		Vec<EncryptedSecret<T::AccountId>>,
 		ValueQuery,
 	>;
 
+	/// keys given to specific parties to decrypt data
+	#[pallet::storage]
+	pub type ReencryptionKeys<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128,
+		T::AccountId,
+		Blake2_128,
+		[u8;32],
+		Vec<(T::AccountId,  Vec<u8>)>,
+		ValueQuery,
+	>;
+
+	// // for now, we will assume that each withdraw requests
+	// // requires a unique signature from each member of the society
+	// // and that signatures will live only as long as the withdraw request does
+	// #[pallet::storage]
+	// pub type Signatures<T: Config> = StorageMap<
+	// 	_,
+	// 	Blake2_128,
+	// 	SocietyId,
+	// 	Vec<(T::AccountId, (Vec<u8>, Vec<u8>))>, // TODO: expose serializable wrapper from dkg lib
+	// 	ValueQuery,
+	// >;
+
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		
+
 		fn on_initialize(n: T::BlockNumber) -> Weight {
 			let societies = Deadlines::<T>::get(n);
 			for society_id in societies.iter() {
 				Self::try_set_join(n, society_id.clone())
 					.map_err(|_| {
 						SocietyStatus::<T>::mutate(society_id.clone(), |v| {
-							v.push((current_block_number, Phase::Failed));
+							v.push((n, Phase::Failed));
 						});
 					});
-				// 10 blocks arbitrarily for now
-				let ten = T::BlockNumber::from(10u32);
-				if n > ten {
-					let d: T::BlockNumber = n - ten;
+			}
+			// 10 blocks from now (arbitrarily...)
+			let ten = T::BlockNumber::from(10u32);
+			if n > ten {
+				let d: T::BlockNumber = n - ten;
+				// get any societies that transitioned to 'Join' 10 blocks ago
+				let ready_societies = Deadlines::<T>::get(d);
+				// some of these may have failed
+				// "try_finalize_society"
+				for society_id in ready_societies.iter() {
 					Self::try_set_commit(d, society_id.clone())
 						.map_err(|_| {
 							// TODO: could extend the deadline here
 							SocietyStatus::<T>::mutate(society_id.clone(), |v| {
-								v.push((current_block_number, Phase::Failed));
+								v.push((n, Phase::Failed));
 							});
 						});
 				}
-				
 			}
 			
 			Weight::zero()
@@ -210,6 +240,8 @@ pub mod pallet {
 		StartedSociety,
 		CommitedToSociety,
 		JoinedSociety,
+		PublishedData([u8;32]),
+		SubmitReencryptionKeySucces([u8;32], T::AccountId),
 	}
 
 	#[pallet::error]
@@ -222,6 +254,7 @@ pub mod pallet {
 		NotCommitPhase,
 		NotJoinPhase,
 		InvalidMembershipChange,
+		CiphertextInvalid,
 	}
 
 	#[pallet::call]
@@ -322,20 +355,25 @@ pub mod pallet {
 		pub fn join(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
+			compressed_g1: Vec<u8>,
 			compressed_g2: Vec<u8>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin.clone())?;
 			let society = Self::try_get_society(society_id.clone(), who.clone())?;
 			// check that the society is in the 'commit' phase
-			Self::check_society_phase(society_id.clone(), Phase::Commit)?;
+			Self::check_society_phase(society_id.clone(), Phase::Join)?;
 			// just to verify it can be turned into a group element later on
 			// this is probably not necessary, but leaving for now
+			ark_bls12_381::G1Projective::deserialize_compressed(&compressed_g1[..])
+				.map_err(|e| {
+					return Error::<T>::InvalidPublicKey;
+				});
 			ark_bls12_381::G2Projective::deserialize_compressed(&compressed_g2[..])
 				.map_err(|e| {
 					return Error::<T>::InvalidPublicKey;
 				});
-			RSVP::<T>::mutate(society_id.clone(), |rsvps| {
-				rsvps.push((who.clone(), compressed_g2));
+			Pubkeys::<T>::mutate(society_id.clone(), |pks| {
+				pks.push((who.clone(), compressed_g1, compressed_g2));
 			});
 			// update membership map
 			Self::update_membership(
@@ -348,20 +386,66 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// submit a signature for a society
+		/* The following extrinsics could probably be in their own pallet */
+
+		/// if you are a member of a society, verify and publish encrypted data
 		#[pallet::call_index(3)]
 		#[pallet::weight(0)]
-		pub fn submit_signature(
-			origin: OriginFor<T>,
-			society_id: SocietyId, 
-			prover_response: Vec<u8>,
-			verifier_challenge: Vec<u8>,
+		pub fn publish(
+			origin: OriginFor<T>, 
+			society_id: SocietyId,
+			ciphertext: Vec<u8>,
+			ephem_pk: Vec<u8>,
+			vkr: Vec<u8>,
+			r1: u64,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			// TODO: verifications
-			Signatures::<T>::mutate(society_id, |v| {
-				v.push((who.clone(), (prover_response, verifier_challenge)));
+			Self::try_get_society(society_id.clone(), who.clone())?;
+ 
+			// deserialize as group elements
+			let g = G1::generator().mul(Fr::from(r1));
+			let u = G1::deserialize_compressed(&ephem_pk[..]).unwrap();
+			let w = G2::deserialize_compressed(&vkr[..]).unwrap();
+			// verify ciphertext... will instead need to submit proof of this
+			ensure!(
+				dkg::verify_ciphertext(g, u, ciphertext.clone(), w),
+				Error::<T>::CiphertextInvalid,
+			);
+			// should be replaced by a CID later on
+			let hash = sp_io::hashing::sha2_256(&ciphertext);
+			Fs::<T>::mutate(society_id.clone(), hash.clone(), |dir| {
+				dir.push(EncryptedSecret { 
+					author: Some(who.clone()),
+					u: ephem_pk.clone(),
+					v: vkr.clone(),
+				});
 			});
+			Self::deposit_event(Event::<T>::PublishedData(hash.clone()));
+			Ok(())
+		}
+
+		/// submit reencryption keys so that some published data can be decrypted
+		#[pallet::call_index(4)]
+		#[pallet::weight(0)]
+		pub fn submit_reencryption_key(
+			origin: OriginFor<T>,
+			society_id: SocietyId,
+			recipient: T::AccountId,
+			hash: [u8; 32], 
+			encrypted_sk_bytes: Vec<u8>, // not really encrypted yet...
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			Self::try_get_society(society_id.clone(), who.clone())?;
+			// TODO: verifications
+			// verify that the sk is valid (verify_share() but need to implement)
+			// should not be able to 'resubmit' keys
+			ReencryptionKeys::<T>::mutate(recipient.clone(), 
+				hash.clone(), |v| v.push((who.clone(), encrypted_sk_bytes)));
+
+			Self::deposit_event(
+				Event::SubmitReencryptionKeySucces(
+					hash.clone(), 
+					recipient.clone()));
 			Ok(())
 		}
 	}
@@ -472,14 +556,13 @@ impl<T: Config> Pallet<T> {
 	) -> DispatchResult {
 		// Error handling: assumes the society exists
 		let society = Societies::<T>::get(society_id.clone()).unwrap();
+		// TODO: get society status and fail
 		// check if there's a threshold of public keys
 		let threshold = society.clone().threshold;
-		let size = society.clone().members.len() as u8;
-		let min_shares = threshold * size;
-		let pubkeys = RSVP::<T>::get(society_id.clone());
+		let pubkeys = Pubkeys::<T>::get(society_id.clone());
 		// TODO: verify public keys?
 		ensure!(
-			pubkeys.len() >= min_shares.into(),
+			pubkeys.len() >= threshold.into(),
 			Error::<T>::ThresholdNotReached,
 		);
 
