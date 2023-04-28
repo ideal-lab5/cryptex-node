@@ -49,7 +49,7 @@ pub struct EncryptedSecret<AccountId> {
 	/// the ephemeral key used to create the ciphertext
 	pub u: Vec<u8>,
 	/// the verification key
-	pub v: Vec<u8>,
+	pub w: Vec<u8>,
 }
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone, Debug)]
@@ -406,31 +406,28 @@ pub mod pallet {
 		pub fn publish(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
-			ciphertext: Vec<u8>, // v
-			ephem_pk: Vec<u8>, // u
-			vkr: Vec<u8>, // w
+			ciphertext: Vec<u8>,
+			ephem_pk: Vec<u8>,
+			vkr: Vec<u8>,
 			r1: u64, // should probably be encoded in the society? not sure..
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			Self::try_get_society(society_id.clone(), who.clone())?;
- 
 			// deserialize as group elements
 			let g = G1::generator().mul(Fr::from(r1));
 			let u = G1::deserialize_compressed(&ephem_pk[..]).unwrap();
 			let w = G2::deserialize_compressed(&vkr[..]).unwrap();
-			// verify ciphertext... will instead need to submit proof of this
 			ensure!(
 				dkg::verify_ciphertext(g, u, ciphertext.clone(), w),
 				Error::<T>::CiphertextInvalid,
 			);
-			// should be replaced by a CID later on
 			let hash = sp_io::hashing::sha2_256(&ciphertext);
 			Fs::<T>::mutate(society_id.clone(), |dir| {
 				dir.push(EncryptedSecret { 
 					hash_: hash.clone(),
 					author: Some(who.clone()),
 					u: ephem_pk.clone(),
-					v: vkr.clone(),
+					w: vkr.clone(),
 				});
 			});
 			Self::deposit_event(Event::<T>::PublishedData(hash.clone()));
