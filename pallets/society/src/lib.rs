@@ -42,11 +42,13 @@ pub struct Share {
 
 #[derive(Encode, Decode, PartialEq, TypeInfo, Clone)] 
 pub struct EncryptedSecret<AccountId> {
-	// read only, optional
+	/// the sha256 hash of the file contents
+	pub hash_: [u8; 32],
+	/// read only, optional
 	pub author: Option<AccountId>,
-	// the ephemeral key used to create the ciphertext
+	/// the ephemeral key used to create the ciphertext
 	pub u: Vec<u8>,
-	// the verification key
+	/// the verification key
 	pub v: Vec<u8>,
 }
 
@@ -162,25 +164,35 @@ pub mod pallet {
 	/// be better suited to exist in a contract
 	/// but for the sake of simplicity and speed I am doing it here
 	#[pallet::storage]
-	pub type Fs<T: Config> = StorageDoubleMap<
+	pub type Fs<T: Config> = StorageMap<
 		_,
 		Blake2_128,
 		SocietyId,
-		Blake2_128,
-		[u8; 32],
 		Vec<EncryptedSecret<T::AccountId>>,
 		ValueQuery,
 	>;
 
 	/// keys given to specific parties to decrypt data
+	// #[pallet::storage]
+	// pub type ReencryptionKeys<T: Config> = StorageDoubleMap<
+	// 	_,
+	// 	Blake2_128,
+	// 	T::AccountId,
+	// 	Blake2_128,
+	// 	[u8;32],
+	// 	Vec<(T::AccountId,  Vec<u8>)>,
+	// 	ValueQuery,
+	// >;
+
+	// I am going with a flat structure for now because I am 
+	// having so many issues querying a double map :')
+	// ideally this should be a double map
 	#[pallet::storage]
-	pub type ReencryptionKeys<T: Config> = StorageDoubleMap<
+	pub type ReencryptionKeys<T: Config> = StorageMap<
 		_,
 		Blake2_128,
 		T::AccountId,
-		Blake2_128,
-		[u8;32],
-		Vec<(T::AccountId,  Vec<u8>)>,
+		Vec<(T::AccountId, [u8;32], Vec<u8>)>,
 		ValueQuery,
 	>;
 
@@ -394,10 +406,10 @@ pub mod pallet {
 		pub fn publish(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
-			ciphertext: Vec<u8>,
-			ephem_pk: Vec<u8>,
-			vkr: Vec<u8>,
-			r1: u64,
+			ciphertext: Vec<u8>, // v
+			ephem_pk: Vec<u8>, // u
+			vkr: Vec<u8>, // w
+			r1: u64, // should probably be encoded in the society? not sure..
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			Self::try_get_society(society_id.clone(), who.clone())?;
@@ -413,8 +425,9 @@ pub mod pallet {
 			);
 			// should be replaced by a CID later on
 			let hash = sp_io::hashing::sha2_256(&ciphertext);
-			Fs::<T>::mutate(society_id.clone(), hash.clone(), |dir| {
+			Fs::<T>::mutate(society_id.clone(), |dir| {
 				dir.push(EncryptedSecret { 
+					hash_: hash.clone(),
 					author: Some(who.clone()),
 					u: ephem_pk.clone(),
 					v: vkr.clone(),
@@ -439,8 +452,8 @@ pub mod pallet {
 			// TODO: verifications
 			// verify that the sk is valid (verify_share() but need to implement)
 			// should not be able to 'resubmit' keys
-			ReencryptionKeys::<T>::mutate(recipient.clone(), 
-				hash.clone(), |v| v.push((who.clone(), encrypted_sk_bytes)));
+			ReencryptionKeys::<T>::mutate(
+				recipient.clone(), |v| v.push((who.clone(), hash.clone(), encrypted_sk_bytes)));
 
 			Self::deposit_event(
 				Event::SubmitReencryptionKeySucces(
