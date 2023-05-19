@@ -65,6 +65,7 @@ pub enum MemberStatus {
 	Invitee,
 	Committed,
 	Active,
+	Founder,
 }
 
 #[frame_support::pallet]
@@ -168,31 +169,18 @@ pub mod pallet {
 		_,
 		Blake2_128,
 		SocietyId,
-		Vec<EncryptedSecret<T::AccountId>>,
+		Vec<(EncryptedSecret<T::AccountId>, Vec<u8>)>,
 		ValueQuery,
 	>;
 
-	/// keys given to specific parties to decrypt data
-	// #[pallet::storage]
-	// pub type ReencryptionKeys<T: Config> = StorageDoubleMap<
-	// 	_,
-	// 	Blake2_128,
-	// 	T::AccountId,
-	// 	Blake2_128,
-	// 	[u8;32],
-	// 	Vec<(T::AccountId,  Vec<u8>)>,
-	// 	ValueQuery,
-	// >;
-
-	// I am going with a flat structure for now because I am 
-	// having so many issues querying a double map :')
+	// I am going with a flat structure for now...
 	// ideally this should be a double map
 	#[pallet::storage]
 	pub type ReencryptionKeys<T: Config> = StorageMap<
 		_,
 		Blake2_128,
 		T::AccountId,
-		Vec<(T::AccountId, [u8;32], Vec<u8>)>,
+		Vec<(T::AccountId, SocietyId, [u8;32], Vec<u8>)>,
 		ValueQuery,
 	>;
 
@@ -214,12 +202,15 @@ pub mod pallet {
 		fn on_initialize(n: T::BlockNumber) -> Weight {
 			let societies = Deadlines::<T>::get(n);
 			for society_id in societies.iter() {
-				Self::try_set_join(n, society_id.clone())
-					.map_err(|_| {
-						SocietyStatus::<T>::mutate(society_id.clone(), |v| {
-							v.push((n, Phase::Failed));
+				let society = Societies::<T>::get(society_id);
+				if society.is_some() {
+					Self::try_set_join(n, society_id.clone(), society.unwrap().clone())
+						.map_err(|_| {
+							SocietyStatus::<T>::mutate(society_id.clone(), |v| {
+								v.push((n, Phase::Failed));
+							});
 						});
-					});
+				}
 			}
 			// 10 blocks from now (arbitrarily...)
 			let ten = T::BlockNumber::from(10u32);
@@ -230,7 +221,7 @@ pub mod pallet {
 				// some of these may have failed
 				// "try_finalize_society"
 				for society_id in ready_societies.iter() {
-					Self::try_set_commit(d, society_id.clone())
+					Self::try_set_active(d, society_id.clone())
 						.map_err(|_| {
 							// TODO: could extend the deadline here
 							SocietyStatus::<T>::mutate(society_id.clone(), |v| {
@@ -247,12 +238,21 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
+		/// a society was created
 		CreatedSociety,
+		/// a society was closed
 		ClosedSociety,
-		StartedSociety,
+		/// a society was successfully and forcefully updated to the 'join' phase
+		ForceJoinPhaseSuccess,
+		/// a society was successfully and forcefully updated to the 'commit' phase
+		ForceCommitPhaseSuccess,
+		/// you have successfully issued commitments to the society
 		CommitedToSociety,
+		///  you have succesfully issued a public key to the society
 		JoinedSociety,
+		/// you have published data successfully
 		PublishedData([u8;32]),
+		///  you have submitted reencryption keys successfully
 		SubmitReencryptionKeySucces([u8;32], T::AccountId),
 	}
 
@@ -289,7 +289,7 @@ pub mod pallet {
 			threshold: u8,
 			name: Vec<u8>,
 			deadline: T::BlockNumber,
-			members: Vec<T::AccountId>, // note: the order of the members defined here determines each member's 'slot'
+			members: Vec<T::AccountId>, // note: the order of the members defined here determines each member's 'slot' number
 		) -> DispatchResult {
 			let founder = ensure_signed(origin)?;
 			ensure!(
@@ -297,6 +297,11 @@ pub mod pallet {
 				Error::<T>::SocietyAlreadyExists
 			);
 			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			Membership::<T>::mutate(
+				founder.clone(), 
+				MemberStatus::Founder, 
+				|v| v.push(society_id.clone())
+			);
 			for member in members.iter() {
 				Membership::<T>::mutate(
 					member.clone(), 
@@ -398,10 +403,43 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::call_index(3)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn try_force_join_phase(
+			origin: OriginFor<T>, 
+			society_id: SocietyId,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			// verify ownership
+			let society = Self::try_get_society(society_id.clone(), who.clone())?;
+			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			Self::try_set_join(current_block_number, society_id.clone(), society.clone())?;
+			Self::deposit_event(Event::<T>::ForceJoinPhaseSuccess);
+			Ok(())
+		}
+
+		#[pallet::call_index(4)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn try_force_active_phase(
+			origin: OriginFor<T>, 
+			society_id: SocietyId,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			// verify ownership
+			let society = Self::try_get_society(society_id.clone(), who.clone())?;
+			let current_block_number = <frame_system::Pallet<T>>::block_number();
+			Self::try_set_active(current_block_number, society_id.clone())?;
+			Self::deposit_event(Event::<T>::ForceCommitPhaseSuccess);
+			Ok(())
+		}		
+
 		/* The following extrinsics could probably be in their own pallet */
 
 		/// if you are a member of a society, verify and publish encrypted data
-		#[pallet::call_index(3)]
+		///
+		/// * `storage_cid`: a sha256 has of the CID of the ciphertext (basically a commitment to the content being added to external storage, e.g. IPFS)
+		///
+		#[pallet::call_index(5)]
 		#[pallet::weight(0)]
 		pub fn publish(
 			origin: OriginFor<T>, 
@@ -410,6 +448,7 @@ pub mod pallet {
 			ephem_pk: Vec<u8>,
 			vkr: Vec<u8>,
 			r1: u64, // should probably be encoded in the society? not sure..
+			storage_hash: Vec<u8>
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			Self::try_get_society(society_id.clone(), who.clone())?;
@@ -423,19 +462,19 @@ pub mod pallet {
 			);
 			let hash = sp_io::hashing::sha2_256(&ciphertext);
 			Fs::<T>::mutate(society_id.clone(), |dir| {
-				dir.push(EncryptedSecret { 
+				dir.push((EncryptedSecret { 
 					hash_: hash.clone(),
 					author: Some(who.clone()),
 					u: ephem_pk.clone(),
 					w: vkr.clone(),
-				});
+				}, storage_hash));
 			});
 			Self::deposit_event(Event::<T>::PublishedData(hash.clone()));
 			Ok(())
 		}
 
 		/// submit reencryption keys so that some published data can be decrypted
-		#[pallet::call_index(4)]
+		#[pallet::call_index(6)]
 		#[pallet::weight(0)]
 		pub fn submit_reencryption_key(
 			origin: OriginFor<T>,
@@ -450,7 +489,8 @@ pub mod pallet {
 			// verify that the sk is valid (verify_share() but need to implement)
 			// should not be able to 'resubmit' keys
 			ReencryptionKeys::<T>::mutate(
-				recipient.clone(), |v| v.push((who.clone(), hash.clone(), encrypted_sk_bytes)));
+				recipient.clone(), |v| v.push(
+					(who.clone(), society_id.clone(), hash.clone(), encrypted_sk_bytes)));
 
 			Self::deposit_event(
 				Event::SubmitReencryptionKeySucces(
@@ -534,9 +574,9 @@ impl<T: Config> Pallet<T> {
 	fn try_set_join(
 		block_number: T::BlockNumber,
 		society_id: SocietyId,
+		society: Society<T::AccountId>,
 	) -> DispatchResult {
-		// Error handling: assumes the society exists
-		let society = Societies::<T>::get(society_id.clone()).unwrap();
+		// let society = Societies::<T>::get(society_id.clone()).unwrap();
 		// check if there's a threshold of commitments
 		let threshold = society.clone().threshold;
 		let size = society.clone().members.len() as u8;
@@ -560,7 +600,7 @@ impl<T: Config> Pallet<T> {
 	/// * `block_number`: the current block number (should be a deadline)
 	/// * `society_id`: the society to whose status should be updated
 	/// 
-	fn try_set_commit(
+	fn try_set_active(
 		block_number: T::BlockNumber,
 		society_id: SocietyId,
 	) -> DispatchResult {
