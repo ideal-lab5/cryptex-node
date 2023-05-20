@@ -282,7 +282,8 @@ pub mod pallet {
 		/// * `members`: The members of the society
 		/// 
 		#[pallet::call_index(0)]
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		#[pallet::weight(0)]
 		pub fn create(
 			origin: OriginFor<T>,
 			society_id: SocietyId,
@@ -333,7 +334,8 @@ pub mod pallet {
 		/// * `share_and_commitments`: A vec of shares and associated commitments
 		/// 
 		#[pallet::call_index(1)]
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		#[pallet::weight(0)]
 		pub fn commit(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
@@ -368,7 +370,8 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		#[pallet::weight(0)]
 		pub fn join(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
@@ -404,7 +407,8 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(3)]
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		#[pallet::weight(0)]
 		pub fn try_force_join_phase(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
@@ -419,7 +423,8 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(4)]
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		#[pallet::weight(0)]
 		pub fn try_force_active_phase(
 			origin: OriginFor<T>, 
 			society_id: SocietyId,
